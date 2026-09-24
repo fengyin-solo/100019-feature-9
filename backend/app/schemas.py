@@ -28,6 +28,24 @@ class EntryPayload(BaseModel):
     remark: str | None = None
 
 
+class ImportFailure(BaseModel):
+    """批量导入中未通过校验的一行：行号、原因与关键字段，方便前端单独列出。"""
+
+    line: int
+    reason: str
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+class ImportResult(BaseModel):
+    """批量导入结果：成功条数、失败明细，以及是否因超限或解析中断而提前停止。"""
+
+    ok: bool
+    message: str
+    imported: int = 0
+    failed: list[ImportFailure] = Field(default_factory=list)
+    aborted: bool = False
+
+
 
 class OrderEntry(BaseModel):
     """冷链订单明细结构。"""
