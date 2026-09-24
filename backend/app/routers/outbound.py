@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
-from app.schemas import ActionResult, EntryPayload, PageResult
-from app.services.outbound import OutboundService
+from app.schemas import ActionResult, EntryPayload, ImportResult, PageResult
+from app.services.outbound import OutboundService, parse_import_file
 
 router = APIRouter(prefix="/api/outbound", tags=["出库管理"])
 
@@ -14,6 +14,8 @@ service = OutboundService()
 
 LIST_FIELDS = ["出库单号", "客户名称", "货物名称", "批次号", "出库数量", "出库温度", "拣货人", "出库时间"]
 STATUSES = ["待拣货", "已拣货", "已发运", "已取消"]
+# 上传体积上限：超过直接拒收；行数上限在导入服务里控制，超限会保留已导入部分。
+MAX_IMPORT_BYTES = 2 * 1024 * 1024
 
 
 @router.get("", response_model=PageResult[dict])
@@ -28,6 +30,47 @@ def list_entries(
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+# 注意：/export、/download 这类静态路径必须放在 /{entry_id} 之前，否则会被当成 id 匹配掉。
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出出库管理清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "outbound", "total": total, "items": items}
+
+
+@router.get("/download")
+def download_entries() -> Response:
+    """下载出库管理清单 CSV：批次号等列全部带上，刚导入生效的记录也会出现在里面。"""
+    items, _ = service.list_entries(page=1, size=10000)
+    content = service.render_download(items)
+    return Response(
+        content=content.encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=outbound-entries.csv"},
+    )
+
+
+@router.post("/import", response_model=ImportResult)
+async def import_entries(request: Request) -> dict[str, Any]:
+    """批量导入出库单：接收 CSV 文本，逐行校验，合法行落库，问题行逐条给出原因。
+
+    文件过大或解析中断时会中止处理，但已经导入成功的行会保留；重复导入同一份文件
+    不会让已生效的行重复落库。
+    """
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="未收到文件内容，请选择要导入的 CSV 文件")
+    if len(body) > MAX_IMPORT_BYTES:
+        raise HTTPException(status_code=400, detail="文件超过 2MB 上限，请拆分后分批导入")
+    rows, parse_error = parse_import_file(body)
+    result = service.import_entries(rows)
+    if parse_error:
+        result["aborted"] = True
+        result["ok"] = False
+        result["message"] = f"{result['message']}；{parse_error}"
+    return result
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -56,10 +99,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出出库管理清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "outbound", "total": total, "items": items}

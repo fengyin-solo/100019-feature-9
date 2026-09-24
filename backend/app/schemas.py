@@ -21,6 +21,26 @@ class ActionResult(BaseModel):
     entry: dict[str, Any] | None = None
 
 
+class ImportFailure(BaseModel):
+    """批量导入时被拦下的行：给出行号与原因，方便回到源文件逐条修正。"""
+
+    line: int
+    order_no: str = ""
+    reason: str
+
+
+class ImportResult(BaseModel):
+    """批量导入汇总：成功多少、哪些行未生效、是否因文件过大或解析中断而中止。"""
+
+    ok: bool
+    message: str
+    total: int = 0
+    imported: int = 0
+    failed: int = 0
+    aborted: bool = False
+    failures: list[ImportFailure] = Field(default_factory=list)
+
+
 class EntryPayload(BaseModel):
     """登记或修改一条业务记录时提交的字段集合。"""
 
